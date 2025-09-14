@@ -1,0 +1,72 @@
+[
+  {
+    "id": "travel_enthusiast",
+    "description": "Карта для путешествий для активных путешественников",
+    "condition": "(travel_spend + taxi_spend + entertainment_spend.get('spend_Отели', 0)) > 10000",
+    "product": "Карта для путешествий",
+    "priority": 10
+  },
+  {
+    "id": "premium_high_spender",
+    "description": "Премиальная карта для VIP клиентов с высокими тратами",
+    "condition": "balance > 800000 and (restaurant_spend + entertainment_spend.get('spend_Ювелирные украшения', 0) + entertainment_spend.get('spend_Косметика и Парфюмерия', 0)) > 10000",
+    "product": "Премиальная карта",
+    "priority": 9
+  },
+  {
+    "id": "credit_active_spender",
+    "description": "Кредитная карта для активных покупателей",
+    "condition": "(restaurant_spend + entertainment_spend.get('spend_Едим дома', 0) + entertainment_spend.get('spend_Смотрим дома', 0) + entertainment_spend.get('spend_Играем дома', 0)) > 15000",
+    "product": "Кредитная карта",
+    "priority": 8
+  },
+  {
+    "id": "fx_active_trader",
+    "description": "Обмен валют для валютных операций",
+    "condition": "fx_buy > 5000 or fx_sell > 5000",
+    "product": "Обмен валют",
+    "priority": 7
+  },
+  {
+    "id": "cash_flow_deficit",
+    "description": "Кредит наличными при кассовых разрывах",
+    "condition": "transfer_out > transfer_in and (transfer_out - transfer_in) > 30000 and balance < 300000",
+    "product": "Кредит наличными",
+    "priority": 6
+  },
+  {
+    "id": "fx_deposit_combo",
+    "description": "Мультивалютный депозит для валютно-активных клиентов",
+    "condition": "balance > 400000 and (fx_buy > 3000 or fx_sell > 3000)",
+    "product": "Депозит мультивалютный",
+    "priority": 5
+  },
+  {
+    "id": "wealthy_investor",
+    "description": "Инвестиции для состоятельных клиентов",
+    "condition": "balance > 1200000 and transfer_in > transfer_out and (transfer_in - transfer_out) > 50000",
+    "product": "Инвестиции",
+    "priority": 4
+  },
+  {
+    "id": "regular_saver",
+    "description": "Накопительный депозит для регулярных накоплений",
+    "condition": "transfer_in > 15000 and balance < 800000 and transfer_in > transfer_out",
+    "product": "Депозит накопительный",
+    "priority": 3
+  },
+  {
+    "id": "gold_diversification",
+    "description": "Золотые слитки для диверсификации",
+    "condition": "balance > 1000000 and (fx_buy > 10000 or fx_sell > 10000)",
+    "product": "Золотые слитки",
+    "priority": 2
+  },
+  {
+    "id": "conservative_fallback",
+    "description": "Сберегательный депозит как базовый продукт",
+    "condition": "balance > 50000",
+    "product": "Депозит сберегательный",
+    "priority": 1
+  }
+]

@@ -1,0 +1,6 @@
+pandas>=2.0.0
+scikit-learn>=1.2.0
+jinja2>=3.1.0
+business-rules>=1.0.0
+gender-guesser>=0.4.0
+numpy>=1.24.0

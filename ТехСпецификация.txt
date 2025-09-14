@@ -1,0 +1,321 @@
+# Техническая Спецификация: Система Персонализации Банковских Предложений
+
+## 1. Общая Архитектура и Настройка Проекта
+
+### 1.1. Структура Директорий
+
+Проект организован для обеспечения модульности, reproducibility и легкости тестирования. Используйте Poetry для управления зависимостями (poetry init, poetry add <package>). Структура:
+
+/project_root  
+|-- /data               # Исходные CSV-файлы (clients.csv, transactions.csv, transfers.csv)  
+|-- /src                # Основной исходный код  
+|   |-- __init__.py     # Для импорта модулей  
+|   |-- data_processing.py  
+|   |-- feature_engineering.py  
+|   |-- recommendation_engine.py  
+|   |-- nlg_module.py  
+|   |-- main.py  
+|   |-- config.py  
+|-- /templates          # Шаблоны Jinja2 (файлы .jinja, e.g., travel_card.jinja)  
+|-- /notebooks          # Исследовательские ноутбуки (e.g., eda.ipynb для EDA)  
+|-- requirements.txt    # Экспортированные зависимости (poetry export -f requirements.txt)  
+|-- README.md           # Описание: установка, запуск, тесты  
+
+### 1.2. Конфигурация (src/config.py)
+
+Этот модуль содержит все константы и параметры в виде словаря или dataclass для избежания hardcoding в коде. Импортируйте как `from config import CONFIG`.
+
+```python
+from dataclasses import dataclass
+from typing import Dict
+
+@dataclass
+class Config:
+    DATA_PATHS: Dict[str, str] = {
+        'clients': 'data/clients.csv',
+        'transactions': 'data/transactions.csv',
+        'transfers': 'data/transfers.csv',
+        'output': 'data/output.csv'
+    }
+    CURRENCY_RATES: Dict[str, float] = {  # Hardcoded rates to KZT (as of 2025-09-13)
+        'USD': 480.0,
+        'EUR': 530.0,
+        'KZT': 1.0
+    }
+    RFMD_THRESHOLDS: Dict[str, float] = {  # Пороги для метрик
+        'high_balance': 1000000.0,  # Для tier в премиальной карте
+        'fx_volume_threshold': 10000.0  # Для FX-активности
+    }
+    CLUSTER_PARAMS: Dict[str, any] = {
+        'n_clusters': 4,
+        'random_state': 42
+    }
+    PROPENSITY_PARAMS: Dict[str, any] = {
+        'train_split': 0.8,
+        'threshold_spend': 50000.0  # Для синтетического таргета
+    }
+    PRODUCTS: list[str] = [  # Точные названия продуктов
+        'Карта для путешествий', 'Премиальная карта', 'Кредитная карта', 'Обмен валют',
+        'Кредит наличными', 'Депозит мультивалютный', 'Депозит сберегательный',
+        'Депозит накопительный', 'Инвестиции', 'Золотые слитки'
+    ]
+    RULES_JSON_PATH: str = 'src/rules.json'  # Путь к JSON с правилами для business-rules
+    TEMPLATE_DIR: str = 'templates/'
+    MAX_PUSH_LEN: int = 220
+    AB_TEST_FLAG: str = 'B'  # 'A' для старой логики (if-else), 'B' для новой
+
+CONFIG = Config()
+```
+
+Правила в rules.json (declarative, как в пайплайне): Массив объектов с variables и actions.
+
+### 1.3. Зависимости (requirements.txt)
+
+```
+pandas>=2.0.0
+scikit-learn>=1.2.0
+jinja2>=3.1.0
+business-rules>=1.0.0
+gender-guesser>=0.4.0  # Для gender-based endings в NLG
+```
+
+Установка: `pip install -r requirements.txt`. Используйте virtualenv или Poetry.
+
+## 2. Детализированная Спецификация Модулей
+
+Все модули используют type hints (typing), logging (import logging; logging.basicConfig(level=logging.INFO)) и docstrings. Избегайте циклов в Pandas (vectorized ops). Добавьте unit-тесты в каждом модуле (e.g., def test_func()).
+
+### 2.1. Модуль src/data_processing.py
+
+Назначение: Загрузка, очистка и merge данных из CSV.
+
+Функции:
+
+```python
+import pandas as pd
+from typing import Dict
+from config import CONFIG
+
+def load_datasets(config: Dict[str, any]) -> Dict[str, pd.DataFrame]:
+    """
+    Логика:
+    1. Загрузить каждый CSV с помощью pd.read_csv(path).
+    2. Проверить наличие обязательных столбцов (e.g., client_code в каждом).
+    3. Логгировать успешную загрузку или ошибки.
+    Выход: Словарь {'clients': df_clients, 'transactions': df_transactions, 'transfers': df_transfers}.
+    """
+    # Реализация...
+```
+
+```python
+def preprocess_and_merge(dataframes: Dict[str, pd.DataFrame], config: Dict[str, any]) -> pd.DataFrame:
+    """
+    Логика:
+    1. Merge: clients left-join transactions и transfers по 'client_code' (pd.merge how='left').
+    2. Конверсия дат: pd.to_datetime('date', format='%Y-%m-%d %H:%M:%S').
+    3. Унификация валют: Создать столбец 'amount_kzt' = amount * config['CURRENCY_RATES'][currency.upper()].
+    4. Обработка NaN: fillna(0) для amount/balance, dropna для date/category/type.
+    5. Удаление outliers: Для 'amount_kzt' вычислить IQR по группам client_code; удалить > Q3 + 1.5*IQR.
+    6. Добавить 'month' = date.dt.strftime('%B') для NLG.
+    Выход: Единый DataFrame с всеми данными, индекс по client_code.
+    """
+    # Реализация...
+```
+
+### 2.2. Модуль src/feature_engineering.py
+
+Назначение: Генерация RFM-D, кластеризация и propensity scores.
+
+Функции:
+
+```python
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
+from typing import Dict
+
+def create_rfmd_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Логика:
+    1. Группировка по client_code.
+    2. Recency: (pd.Timestamp.now() - df.groupby('client_code')['date'].max()).dt.days; нормализовать MinMaxScaler.
+    3. Frequency: df.groupby(['client_code', 'category'])['amount_kzt'].count().unstack(fill_value=0); суммировать фокус-категории (Такси, Путешествия и т.д.).
+    4. Monetary: df.groupby('client_code')['amount_kzt'].mean() + df['avg_monthly_balance_KZT'].
+    5. Diversity: df.groupby('client_code')['category'].nunique() + df.groupby('client_code')['type'].nunique().
+    6. Добавить столбцы: 'recency', 'frequency', 'monetary', 'diversity'.
+    Выход: df с новыми столбцами.
+    """
+    # Реализация...
+```
+
+```python
+def add_cluster_labels(df: pd.DataFrame, config: Dict[str, any]) -> pd.DataFrame:
+    """
+    Логика:
+    1. Выбрать фичи: ['recency', 'frequency', 'monetary', 'diversity', 'avg_monthly_balance_KZT'] + аггрегированные spend по категориям.
+    2. Стандартизация: scaler = StandardScaler().fit_transform(features).
+    3. KMeans: model = KMeans(n_clusters=config['CLUSTER_PARAMS']['n_clusters'], random_state=config['CLUSTER_PARAMS']['random_state']).fit(scaled).
+    4. Добавить 'cluster': model.labels_.
+    5. Валидация: Вычислить silhouette_score; логгировать if <0.5.
+    Выход: df с 'cluster'.
+    """
+    # Реализация...
+```
+
+```python
+def add_propensity_scores(df: pd.DataFrame, config: Dict[str, any]) -> pd.DataFrame:
+    """
+    Логика (опционал, включить если AB_TEST_FLAG=='B'):
+    1. Для продуктов ['Кредитная карта', 'Инвестиции', 'Депозит мультивалютный'].
+    2. Фичи: RFM-D + OneHotEncoder на 'category', 'type', 'status'.
+    3. Синтетический таргет: e.g., for 'Кредитная карта' - 1 if spend_top3 > threshold else 0.
+    4. Split: X_train, X_test = train_test_split(..., test_size=1-config['PROPENSITY_PARAMS']['train_split']).
+    5. Модель: lr = LogisticRegression().fit(X_train, y_train); probs = lr.predict_proba(df[features])[:,1].
+    6. Добавить столбцы: 'propensity_credit_card', etc.
+    Выход: df с propensity scores.
+    """
+    # Реализация...
+```
+
+### 2.3. Модуль src/recommendation_engine.py
+
+Назначение: Расчет выгоды, применение правил, выбор продукта.
+
+Функции:
+
+```python
+import pandas as pd
+from business_rules import run_all
+import json
+from typing import Dict
+from config import CONFIG
+
+def calculate_all_benefits(client_features: pd.Series, config: Dict[str, any]) -> Dict[str, float]:
+    """
+    Логика:
+    1. Приватные функции: e.g., def _calc_travel_benefit(features): return 0.04 * (features['spend_Путешествия'] + features['spend_Такси']).
+    2. Аналогично для всех продуктов (используйте ТЗ-метрики: tier_cashback if balance > high_balance, etc.).
+    3. Для кредитов/депозитов: outflows = sum(out directions), inflows = sum(in); gap = outflows - inflows.
+    4. Учитывать лимиты (hardcoded в config, e.g., max_cashback=10000).
+    Выход: {'product_name': benefit_score}.
+    """
+    # Реализация...
+```
+
+```python
+def apply_rules_and_select_best(benefits: Dict[str, float], client_features: pd.Series, config: Dict[str, any]) -> str:
+    """
+    Логика:
+    1. Загрузить rules из json.load(open(config['RULES_JSON_PATH'])).
+    2. Подготовить variables: {'travel_spend': client_features['spend_Путешествия'], ...}.
+    3. Определить actions: def recommend(params): return params['product'].
+    4. run_all(rule_list=rules, defined_variables=variables, defined_actions={'recommend': recommend}).
+    5. Если rules не сработали, max(benefits).
+    6. Tie-breaker: Если равны, max по propensity[product] или cluster-affinity (e.g., if cluster==0: prioritize travel).
+    Выход: 'product_name'.
+    """
+    # Реализация...
+```
+
+### 2.4. Модуль src/nlg_module.py
+
+Назначение: Генерация уведомлений с Jinja2.
+
+Функции:
+
+```python
+import pandas as pd
+import jinja2
+import gender_guesser.detector as gender
+from typing import Dict
+from config import CONFIG
+
+def generate_push_text(client_data: pd.Series, product: str, config: Dict[str, any]) -> str:
+    """
+    Логика:
+    1. env = jinja2.Environment(loader=jinja2.FileSystemLoader(config['TEMPLATE_DIR'])).
+    2. template = env.get_template(f'{product.lower().replace(" ", "_")}.jinja').
+    3. Контекст: {'name': client_data['name'], 'month': client_data['month'], 'benefit': f"{client_data['benefit']:.0f} ₸", 'cat1': top_cats[0], ...}.
+    4. Gender: d = gender.Detector(); sex = d.get_gender(client_data['name'].split()[0]); adjust endings (e.g., if female: 'вернулась бы').
+    5. Render: text = template.render(context).
+    6. Валидация: len(text) <= config['MAX_PUSH_LEN']; no CAPS (regex); max 1 '!'; format numbers '{:,.0f}'.replace(',', ' ') + ' ₸'.
+    7. Добавить emoji if appropriate (e.g., ✈️ for travel).
+    Выход: Строка уведомления.
+    """
+    # Реализация...
+```
+
+### 2.5. Модуль src/main.py
+
+Назначение: Оркестрация пайплайна.
+
+Функции:
+
+```python
+import pandas as pd
+from data_processing import load_datasets, preprocess_and_merge
+from feature_engineering import create_rfmd_features, add_cluster_labels, add_propensity_scores
+from recommendation_engine import calculate_all_benefits, apply_rules_and_select_best
+from nlg_module import generate_push_text
+from config import CONFIG
+
+def main() -> None:
+    """
+    Логика:
+    1. dataframes = load_datasets(CONFIG.__dict__)
+    2. df = preprocess_and_merge(dataframes, CONFIG.__dict__)
+    3. df = create_rfmd_features(df)
+    4. df = add_cluster_labels(df, CONFIG.__dict__)
+    5. if CONFIG.AB_TEST_FLAG == 'B': df = add_propensity_scores(df, CONFIG.__dict__)
+    6. results = []
+    7. for _, row in df.iterrows():
+        benefits = calculate_all_benefits(row, CONFIG.__dict__)
+        product = apply_rules_and_select_best(benefits, row, CONFIG.__dict__)
+        push = generate_push_text(row, product, CONFIG.__dict__)
+        results.append({'client_code': row['client_code'], 'product': product, 'push_notification': push})
+    8. final_df = pd.DataFrame(results)
+    9. final_df.to_csv(CONFIG.DATA_PATHS['output'], index=False, quoting=1)  # Escape quotes in push
+    """
+    # Реализация...
+```
+
+if __name__ == '__main__': main()
+
+## 3. Схемы Данных (Data Schemas)
+
+### Таблица 1: Схема DataFrame после preprocess_and_merge
+
+| ColumnName              | DataType | Description                          |
+|-------------------------|----------|--------------------------------------|
+| client_code             | int64    | Уникальный ID клиента                |
+| name                    | object   | Имя клиента                          |
+| status                  | object   | Статус (Студент, etc.)               |
+| age                     | int64    | Возраст клиента                     |
+| city                    | object   | Город                                |
+| avg_monthly_balance_KZT | float64  | Средний месячный остаток в KZT       |
+| date                    | datetime | Дата транзакции/перевода             |
+| category                | object   | Категория транзакции (Такси, etc.)   |
+| amount                  | float64  | Исходная сумма                       |
+| currency                | object   | Валюта (KZT, USD, EUR)              |
+| amount_kzt              | float64  | Сумма в KZT                          |
+| type                    | object   | Тип перевода (fx_buy, etc.)          |
+| direction               | object   | Направление (in/out)                 |
+| month                   | object   | Месяц для NLG (e.g., 'Август')       |
+
+### Таблица 2: Схема DataFrame после feature_engineering
+
+| ColumnName              | DataType | Description                          |
+|-------------------------|----------|--------------------------------------|
+| client_code             | int64    | Уникальный ID клиента                |
+| ... (все из предыдущей) | ...      | ...                                  |
+| recency                 | float64  | Нормализованная давность (0-1)       |
+| frequency               | int64    | Частота трат в фокус-категориях      |
+| monetary                | float64  | Среднемесячные расходы + остаток     |
+| diversity               | int64    | Количество уникальных категорий/типов|
+| cluster                 | int64    | Метка кластера (0-3)                  |
+| propensity_credit_card  | float64  | Вероятность для Кредитной карты      |
+| propensity_investments  | float64  | Вероятность для Инвестиций           |
+| propensity_multi_deposit| float64  | Вероятность для Депозит мультивалютный
